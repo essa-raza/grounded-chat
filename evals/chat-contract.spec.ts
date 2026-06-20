@@ -27,7 +27,18 @@ vi.mock("ai", async () => {
       toolName: "searchListings",
       input: { query: "brookline cafe" },
       output: {
-        results: [],
+        results: [
+          {
+            id: "din-001",
+            name: "The Mill House Cafe",
+            category: "dining",
+            city: "Brookline",
+            tags: ["breakfast", "coffee", "vegetarian-friendly"],
+            priceTier: "$",
+            blurb: "Small-batch coffee and all-day breakfast in a restored grain mill.",
+            externalUrl: "https://example.com/mill-house-cafe",
+          },
+        ],
       },
     };
     yield {

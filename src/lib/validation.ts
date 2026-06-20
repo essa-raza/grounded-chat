@@ -355,7 +355,22 @@ export function finalizeAssistantTurn(
   }
 
   const groundedFallback = buildDeterministicGroundedAnswer(tracker, userQuery);
-  const assistantText = ensureDisclaimer(groundedFallback);
+  const trimmedDraft = draftText.trim();
+  const draftWordCount = trimmedDraft.split(/\s+/).filter(Boolean).length;
+  const shouldUseGroundedFallback =
+    trimmedDraft.length === 0 ||
+    modelMissedExactListing ||
+    trimmedDraft.length > 260 ||
+    draftWordCount > 26;
+  const assistantText = ensureDisclaimer(
+    shouldUseGroundedFallback
+      ? groundedFallback
+      : hadSanitizedLeak
+        ? sanitizeAssistantText(trimmedDraft)
+        : trimmedDraft,
+  );
+  const hasApprovedListings = tracker.latestSearchIds.length > 0;
+  const wasRefused = !hasApprovedListings;
 
   return {
     assistantText,
@@ -367,7 +382,9 @@ export function finalizeAssistantTurn(
         ? "Listing references remained approved, but raw IDs or URLs were removed from assistant prose."
         : modelMissedExactListing
           ? "The final answer was replaced with a deterministic grounded summary to keep the named listing accurate."
-        : undefined,
+          : wasRefused
+            ? "No approved listings were available for this turn, so the response stayed scoped without structured cards."
+            : undefined,
     }),
     audit: {
       referencedIds: validation.referencedIds,
@@ -376,9 +393,9 @@ export function finalizeAssistantTurn(
       invalidUrls: validation.invalidUrls,
       approvedIds: [...tracker.approvedIds],
       approvedUrls: [...tracker.approvedUrls],
-      logged: hadSanitizedLeak,
+      logged: hadSanitizedLeak || wasRefused,
       sanitized: hadSanitizedLeak,
     },
-    wasRefused: false,
+    wasRefused,
   };
 }

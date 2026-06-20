@@ -9,11 +9,12 @@ The assistant recommends from one local JSON dataset only. It does not answer fr
 Included:
 
 - `POST /api/chat` built with the Vercel AI SDK
-- typed `searchListings` and `getListingById` tools
+- typed `searchListings` tool over the fixed dataset
 - strict dataset-only grounding
 - refusal handling for prompt injection and out-of-scope requests
 - structured listing references for frontend cards
 - server-side validation of IDs and URLs
+- safe server-side regeneration when a model/tool draft is missing usable grounded references
 - evals and reviewer prompt pack
 
 Removed from this submission copy:
@@ -31,6 +32,19 @@ Removed from this submission copy:
 - `useChat` on the client
 - OpenAI-compatible or Anthropic provider setup
 - Vitest eval suite
+
+## Backend architecture
+
+`POST /api/chat` uses:
+
+- `streamText` for the model call
+- provider-swappable model resolution from env
+- one typed tool, `searchListings`, as the model's dataset access path
+- pre-check guardrails for obvious out-of-scope and prompt-injection cases
+- server-side validation of final prose plus structured references
+- deterministic regeneration when the model/tool draft does not produce a safe grounded result
+
+This keeps the trial aligned with the brief while still failing safe when the model takes a weak path.
 
 ## What the route returns
 
@@ -101,6 +115,15 @@ npm run test:reviewer-pack
 ```
 
 `test:reviewer-pack` posts a manual-review prompt pack to the live local app so the trial prompts can be replayed quickly.
+
+Current verified state:
+
+- `npm run lint`
+- `npm run build`
+- `npm run test:evals`
+- `npm run test:reviewer-pack`
+
+All pass on the current submission copy.
 
 ## Vercel deployment
 

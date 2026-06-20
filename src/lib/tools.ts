@@ -2,7 +2,6 @@ import { tool } from "ai";
 import { z } from "zod";
 
 import {
-  getListingById,
   listCategories,
   listCities,
   searchListings,
@@ -16,7 +15,8 @@ export function createListingTools(tracker: ApprovalTracker) {
   return {
     searchListings: tool({
       description:
-        "Search the fixed listings dataset. Use this before making any recommendation.",
+        "Search the fixed listings dataset. Use this before making any recommendation or answering any question about a listing.",
+      strict: true,
       inputSchema: z.object({
         query: z.string().min(1),
         city: z
@@ -45,21 +45,6 @@ export function createListingTools(tracker: ApprovalTracker) {
 
         registerApprovedListings(tracker, results);
         return { results };
-      },
-    }),
-    getListingById: tool({
-      description:
-        "Fetch a single listing from the fixed dataset by its id when you need to double-check details.",
-      inputSchema: z.object({
-        id: z.string(),
-      }),
-      execute: async ({ id }) => {
-        const listing = getListingById(id);
-        if (listing) {
-          registerApprovedListings(tracker, [listing]);
-        }
-
-        return { listing };
       },
     }),
   };
