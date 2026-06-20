@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { DefaultChatTransport } from "ai";
 import { useChat } from "@ai-sdk/react";
@@ -38,13 +39,18 @@ export function ChatDemo() {
       <section className={styles.shell}>
         <header className={styles.header}>
           <div>
-            <p className={styles.kicker}>Grounded Chat</p>
-            <h1>Hi, ask me about curated local places.</h1>
+            <p className={styles.kicker}>Local Guide</p>
+            <h1>Find standout places faster.</h1>
             <p className={styles.subhead}>
-              I can help with dining, stays, attractions, and venues from this fixed dataset.
+              Ask for restaurants, stays, attractions, or event spaces and get grounded recommendations with matching cards.
             </p>
           </div>
-          <span className={styles.statusPill}>{statusLabel}</span>
+          <div className={styles.headerActions}>
+            <Link className={styles.widgetButton} href="/widget">
+              Widget view
+            </Link>
+            <span className={styles.statusPill}>{statusLabel}</span>
+          </div>
         </header>
 
         <section className={styles.chatSurface}>
@@ -58,7 +64,7 @@ export function ChatDemo() {
                     }`}
                   >
                     <span className={styles.role}>
-                      {message.role === "assistant" ? "Grounded" : "You"}
+                      {message.role === "assistant" ? "Assistant" : "You"}
                     </span>
                     <p className={styles.text}>{getMessageText(message)}</p>
                   </article>
@@ -153,7 +159,7 @@ export function ChatDemo() {
               value={input}
               onChange={(event) => setInput(event.target.value)}
               disabled={status !== "ready"}
-              placeholder="Ask about a place, stay, attraction, or venue..."
+              placeholder="Ask for a restaurant, stay, attraction, or venue..."
             />
             <div className={styles.footerRow}>
               <div className={styles.footerMeta}>
@@ -168,7 +174,7 @@ export function ChatDemo() {
           </form>
 
           <details className={styles.auditPanel}>
-            <summary>Safety details</summary>
+            <summary>Trust & safety</summary>
             <div className={styles.auditBody}>
               <p>Approved IDs: {audit?.approvedIds.join(", ") || "none"}</p>
               <p>
