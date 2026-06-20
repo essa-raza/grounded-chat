@@ -167,6 +167,19 @@ export function ChatWidgetDemo() {
               className={styles.textarea}
               value={input}
               onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  const trimmed = input.trim();
+
+                  if (!trimmed || status !== "ready") {
+                    return;
+                  }
+
+                  sendMessage({ text: trimmed });
+                  setInput("");
+                }
+              }}
               disabled={status !== "ready"}
               placeholder="Ask about a local place..."
             />
