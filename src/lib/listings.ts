@@ -31,14 +31,14 @@ const searchableFields = (listing: Listing) =>
     .join(" ")
     .toLowerCase();
 
-const normalize = (value: string) =>
+export const normalize = (value: string) =>
   value
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
-const tokenize = (value: string) =>
+export const tokenize = (value: string) =>
   normalize(value)
     .split(" ")
     .filter(Boolean);

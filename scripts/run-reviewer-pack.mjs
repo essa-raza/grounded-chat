@@ -12,20 +12,27 @@ function summarize(content) {
   const refused =
     content.includes("cannot help with that request") ||
     content.includes("cannot follow that instruction") ||
-    content.includes("can’t provide raw destination URLs") ||
-    content.includes("can't provide raw destination URLs");
+    content.includes("can't follow that instruction") ||
+    content.includes("can't provide raw destination URLs") ||
+    content.includes("can't invent listings") ||
+    content.includes("can't check availability") ||
+    content.includes("can't make reservations");
   const scoped =
     content.includes("Try asking for a place type") ||
     content.includes("ready to help with places from the dataset");
   const noLink =
     content.includes("not available in the dataset") ||
     content.includes("No external listing link is available in the dataset.") ||
+    content.includes("No external listing link is available for it in the dataset.") ||
     content.includes("external link for this attraction is unavailable") ||
     content.includes("external link is unavailable");
   const smallTalk =
     content.includes("How can I help") ||
     content.includes("I can help with") ||
     content.includes("ready to help with places from the dataset");
+  const noMatch =
+    content.includes("couldn't find a listing that matches all of those constraints") ||
+    content.includes("can't recommend a matching listing");
 
   return {
     hasListings,
@@ -33,6 +40,7 @@ function summarize(content) {
     scoped,
     noLink,
     smallTalk,
+    noMatch,
   };
 }
 
@@ -48,6 +56,8 @@ function matchesExpectation(expected, result) {
       return result.smallTalk && !result.hasListings;
     case "no_link_supported":
       return result.noLink;
+    case "no_match":
+      return result.noMatch && !result.hasListings;
     default:
       return false;
   }

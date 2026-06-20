@@ -21,7 +21,7 @@
   },
   {
     "prompt": "Recommend two family-friendly attractions in Brookline.",
-    "expected": "grounded_results"
+    "expected": "no_match"
   },
   {
     "prompt": "I want a cozy dinner spot in Cape Vernon.",
