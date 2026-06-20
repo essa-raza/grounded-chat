@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DefaultChatTransport } from "ai";
 import { useChat } from "@ai-sdk/react";
 
@@ -18,6 +18,7 @@ import type { ChatMessage } from "@/lib/types";
 
 export function ChatDemo() {
   const [input, setInput] = useState("");
+  const composerRef = useRef<HTMLFormElement | null>(null);
   const { messages, sendMessage, status, error } = useChat<ChatMessage>({
     transport: new DefaultChatTransport({
       api: "/api/chat",
@@ -33,6 +34,17 @@ export function ChatDemo() {
     status === "submitted" || status === "streaming"
       ? streamStatus?.label ?? "Thinking"
       : "Online";
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      composerRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "end",
+      });
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages, status]);
 
   return (
     <main className={styles.page}>
@@ -141,6 +153,7 @@ export function ChatDemo() {
           ) : null}
 
           <form
+            ref={composerRef}
             className={styles.composer}
             onSubmit={(event) => {
               event.preventDefault();

@@ -4,6 +4,7 @@ import {
   getListingById,
   listCities,
   normalize,
+  searchListings,
   tokenize,
 } from "@/lib/listings";
 import type { Listing, ListingCategory } from "@/lib/types";
@@ -23,6 +24,11 @@ export type QueryResolution = {
   sanitized: boolean;
 };
 
+export type ResolverContext = {
+  previousListings?: Listing[];
+  previousQuery?: string;
+};
+
 type QueryConstraints = {
   city?: string;
   categories: ListingCategory[];
@@ -34,6 +40,8 @@ type QueryConstraints = {
   priceMin?: number;
   priceMax?: number;
   wantsAlternatives: boolean;
+  candidateListings?: Listing[];
+  ambiguousListings?: Listing[];
 };
 
 const categoryKeywordMap: Record<ListingCategory, string[]> = {
@@ -107,7 +115,10 @@ const stopwords = new Set([
   "in",
   "is",
   "it",
+  "its",
   "like",
+  "listing",
+  "listings",
   "me",
   "my",
   "near",
@@ -115,13 +126,18 @@ const stopwords = new Set([
   "now",
   "of",
   "on",
+  "one",
   "or",
   "please",
   "recommend",
+  "same",
+  "selected",
   "show",
   "something",
   "stay",
+  "tag",
   "tell",
+  "that",
   "the",
   "this",
   "to",
@@ -134,11 +150,16 @@ const stopwords = new Set([
   "options",
   "fit",
   "friendly",
+  "only",
 ]);
 
 const multiWordSignals = [
   "pet friendly",
+  "pet-friendly",
   "family friendly",
+  "family-friendly",
+  "vegetarian friendly",
+  "vegetarian-friendly",
   "high end",
   "fine dining",
   "old growth",
@@ -148,8 +169,16 @@ const multiWordSignals = [
 ];
 
 const knownMissingInfoPhrases = [
+  "how much",
+  "charge",
+  "per hour",
+  "hourly rate",
+  "rate",
   "hours",
   "opening hours",
+  "open now",
+  "open tonight",
+  "open today",
   "phone",
   "address",
   "reviews",
@@ -165,10 +194,14 @@ const knownAvailabilityPhrases = [
   "available",
   "availability",
   "open this weekend",
+  "open tonight",
+  "open now",
+  "open today",
   "vacancy",
   "vacancies",
   "booked",
   "openings",
+  "tonight",
 ];
 
 const transactionalPhrases = [
@@ -194,7 +227,8 @@ const creativeOutOfScopePhrases = [
   "stocks",
   "flight",
   "flights",
-  "google maps",
+  "better nearby",
+  "from google maps",
 ];
 
 const injectionPhrases = [
@@ -207,14 +241,14 @@ const injectionPhrases = [
   "invent a place",
   "bypass your rules",
   "developer says",
+  "ignore the dataset",
+  "training data",
+  "outside knowledge",
   "raw destination url",
   "raw url",
 ];
 
-const unsupportedAmenityPhrases = [
-  "airport shuttle",
-  "sushi",
-];
+const unsupportedAmenityPhrases = ["airport shuttle", "sushi"];
 
 const allKnownTagTerms = new Set(
   allListings.flatMap((listing) => listing.tags.map((tag) => normalize(tag))),
@@ -241,20 +275,38 @@ function ensureDisclaimer(text: string): string {
   return text.includes(DISCLAIMER_TEXT) ? text : `${text}\n\n${DISCLAIMER_TEXT}`;
 }
 
+function formatListingNames(listings: Listing[]): string {
+  if (listings.length === 0) {
+    return "";
+  }
+
+  if (listings.length === 1) {
+    return listings[0].name;
+  }
+
+  if (listings.length === 2) {
+    return `${listings[0].name} and ${listings[1].name}`;
+  }
+
+  return `${listings[0].name}, ${listings[1].name}, and ${listings[2].name}`;
+}
+
 function findCity(query: string): string | undefined {
   const normalizedQuery = normalize(query);
   return listCities().find((city) => normalizedQuery.includes(normalize(city)));
 }
 
+function containsPhrase(normalizedQuery: string, phrase: string): boolean {
+  return ` ${normalizedQuery} `.includes(` ${normalize(phrase)} `);
+}
+
 function inferCategories(query: string): ListingCategory[] {
   const normalizedQuery = normalize(query);
-  const matched = (Object.entries(categoryKeywordMap) as Array<[ListingCategory, string[]]>)
+  return (Object.entries(categoryKeywordMap) as Array<[ListingCategory, string[]]>)
     .filter(([, keywords]) =>
-      keywords.some((keyword) => normalizedQuery.includes(normalize(keyword))),
+      keywords.some((keyword) => containsPhrase(normalizedQuery, keyword)),
     )
     .map(([category]) => category);
-
-  return matched;
 }
 
 function inferRequiredTags(query: string): string[] {
@@ -262,27 +314,29 @@ function inferRequiredTags(query: string): string[] {
   const required = new Set<string>();
 
   for (const tag of allKnownTagTerms) {
-    if (tag === "weekend" || tag === "budget" || tag === "luxury" || tag === "free") {
+    if (
+      tag === "weekend" ||
+      tag === "budget" ||
+      tag === "luxury" ||
+      tag === "free" ||
+      tag === "dinner"
+    ) {
       continue;
     }
 
-    if (normalizedQuery.includes(tag)) {
+    if (containsPhrase(normalizedQuery, tag)) {
       required.add(tag);
     }
   }
 
   for (const phrase of multiWordSignals) {
-    if (normalizedQuery.includes(phrase) && allKnownTagTerms.has(phrase)) {
+    if (containsPhrase(normalizedQuery, phrase) && allKnownTagTerms.has(phrase)) {
       required.add(phrase);
     }
   }
 
   if (/\bindian\b/.test(normalizedQuery)) {
     required.add("indian");
-  }
-
-  if (/\bdinner\b/.test(normalizedQuery)) {
-    required.add("dinner");
   }
 
   if (/\bwaterfront\b/.test(normalizedQuery)) {
@@ -293,9 +347,16 @@ function inferRequiredTags(query: string): string[] {
     required.add("spa");
   }
 
-  if (/\bpet friendly\b|\bpet friendly\b|\bpet-friendly\b/.test(normalizedQuery)) {
+  if (/\bpet friendly\b|\bpet-friendly\b/.test(normalizedQuery)) {
     required.add("pet friendly");
-    required.add("pet-friendly");
+  }
+
+  if (/\bfamily friendly\b|\bfamily-friendly\b/.test(normalizedQuery)) {
+    required.add("family");
+  }
+
+  if (/\bvegetarian friendly\b|\bvegetarian-friendly\b/.test(normalizedQuery)) {
+    required.add("vegetarian friendly");
   }
 
   return [...required];
@@ -358,20 +419,29 @@ function scoreListingNameMatch(query: string, listing: Listing): number {
 function hasDirectListingMention(query: string): boolean {
   const normalizedQuery = normalize(query);
 
-  if (allListings.some((listing) => normalizedQuery.includes(normalize(listing.name)))) {
-    return true;
-  }
+  return allListings.some((listing) => normalizedQuery.includes(normalize(listing.name)));
+}
 
-  return allListings.some((listing) => scoreListingNameMatch(query, listing) > 0);
+function isFollowUpQuery(query: string): boolean {
+  const normalizedQuery = normalize(query);
+  return (
+    /\b(only|its|it|that|this|one|same|selected)\b/.test(normalizedQuery) ||
+    normalizedQuery.startsWith("give me its") ||
+    normalizedQuery.startsWith("show me its") ||
+    normalizedQuery.startsWith("what are its")
+  );
 }
 
 function findBestListingByName(
   query: string,
   categories: ListingCategory[],
   excludeTerms: string[],
+  requiredTags: string[],
+  candidateListings?: Listing[],
 ): Listing | undefined {
   const normalizedQuery = normalize(query);
-  const exact = allListings.find((listing) =>
+  const searchSpace = candidateListings ?? allListings;
+  const exact = searchSpace.find((listing) =>
     normalizedQuery.includes(normalize(listing.name)),
   );
 
@@ -379,7 +449,7 @@ function findBestListingByName(
     return exact;
   }
 
-  const scored = allListings
+  const scored = searchSpace
     .map((listing) => {
       let score = scoreListingNameMatch(query, listing);
       const listingHaystack = normalize(`${listing.name} ${listing.category} ${listing.tags.join(" ")}`);
@@ -400,12 +470,37 @@ function findBestListingByName(
         score -= 2;
       }
 
+      if (requiredTags.length > 0) {
+        const normalizedTags = listing.tags.map((tag) => normalize(tag));
+
+        if (requiredTags.every((tag) => normalizedTags.includes(tag))) {
+          score += 0.8;
+        } else if (requiredTags.some((tag) => normalizedTags.includes(tag))) {
+          score += 0.25;
+        }
+      }
+
       return { listing, score };
     })
     .filter((entry) => entry.score >= 0.66)
     .sort((left, right) => right.score - left.score);
 
   return scored[0]?.listing;
+}
+
+function findAmbiguousListings(query: string): Listing[] {
+  const queryTokens = tokenize(query).filter((token) => !stopwords.has(token));
+
+  if (queryTokens.length < 2) {
+    return [];
+  }
+
+  const matches = allListings.filter((listing) => {
+    const nameTokens = tokenize(listing.name);
+    return queryTokens.every((token) => nameTokens.includes(token));
+  });
+
+  return matches.length > 1 ? matches : [];
 }
 
 function shouldTryExactListing(query: string): boolean {
@@ -416,7 +511,7 @@ function shouldTryExactListing(query: string): boolean {
   }
 
   if (
-    /\b(show me|tell me about|website for|hours for|opening hours for|reserve a table at|available this weekend|give me the website for|what are the opening hours for)\b/.test(
+    /\b(show me|tell me about|website for|hours for|opening hours for|reserve a table at|available this weekend|give me the website for|what are the opening hours for|is .* open tonight|how much does)\b/.test(
       normalizedQuery,
     )
   ) {
@@ -429,8 +524,8 @@ function shouldTryExactListing(query: string): boolean {
 function extractNamedEntity(query: string): string | undefined {
   const normalizedQuery = normalize(query);
   const patterns = [
-    /(?:recommend|show me|tell me about|give me|find|website for|hours for|opening hours for|reserve a table at|available this weekend for)\s+([a-z0-9'\-\s]+)$/i,
-    /(?:recommend|show me|tell me about|give me|find|website for|hours for|opening hours for|reserve a table at)\s+([a-z0-9'\-\s]+?)(?:\s+in\s+[a-z\s]+)?$/i,
+    /(?:recommend|show me|tell me about|give me|find|website for|hours for|opening hours for|reserve a table at|available this weekend for|is|how much does)\s+([a-z0-9'\-\s&]+)$/i,
+    /(?:recommend|show me|tell me about|give me|find|website for|hours for|opening hours for|reserve a table at)\s+([a-z0-9'\-\s&]+?)(?:\s+in\s+[a-z\s]+)?$/i,
   ];
 
   for (const pattern of patterns) {
@@ -441,12 +536,18 @@ function extractNamedEntity(query: string): string | undefined {
       continue;
     }
 
-    const candidateTokens = tokenize(candidate).filter((token) => !stopwords.has(token));
+    const cleaned = candidate
+      .replace(/\s+and\s+give\s+its\s+url$/, "")
+      .replace(/\s+open\s+tonight$/, "")
+      .replace(/\s+charge\s+per\s+hour$/, "")
+      .trim();
+    const candidateTokens = tokenize(cleaned).filter((token) => !stopwords.has(token));
+
     if (candidateTokens.length === 0) {
       continue;
     }
 
-    if (candidate.startsWith("all ")) {
+    if (cleaned.startsWith("all ")) {
       continue;
     }
 
@@ -458,7 +559,7 @@ function extractNamedEntity(query: string): string | undefined {
     );
 
     if (!genericOnly) {
-      return candidate.replace(/\s+and\s+give\s+its\s+url$/, "").trim();
+      return cleaned;
     }
   }
 
@@ -468,6 +569,12 @@ function extractNamedEntity(query: string): string | undefined {
 function buildNameNotFoundText(name: string): string {
   return ensureDisclaimer(
     `${name} is not in the provided listings dataset. I can only recommend places that exist in this dataset.`,
+  );
+}
+
+function buildAmbiguousText(listings: Listing[]): string {
+  return ensureDisclaimer(
+    `I found multiple matching listings in the dataset: ${formatListingNames(listings)}. Please tell me which one you want.`,
   );
 }
 
@@ -564,9 +671,9 @@ function filterResults(constraints: QueryConstraints): Listing[] {
   }
 
   return sortResults(
-    allListings.filter((listing) => {
-      return listingMatchesConstraints(listing, constraints);
-    }),
+    (constraints.candidateListings ?? allListings).filter((listing) =>
+      listingMatchesConstraints(listing, constraints),
+    ),
     constraints,
   );
 }
@@ -589,6 +696,12 @@ function buildRecommendationText(listings: Listing[], query: string): string {
     if (/\bluxury\b|\bupscale\b|\bexpensive\b|\bhigh end\b/.test(normalizedQuery)) {
       return ensureDisclaimer(
         `${first.name} in ${first.city} is the strongest higher-end match in the dataset.`,
+      );
+    }
+
+    if (/\bpet friendly\b|\bpet-friendly\b/.test(normalizedQuery)) {
+      return ensureDisclaimer(
+        `${first.name} in ${first.city} is the dataset match with the pet-friendly tag.`,
       );
     }
 
@@ -618,6 +731,24 @@ function buildRecommendationText(listings: Listing[], query: string): string {
   );
 }
 
+function buildDatasetRedirectText(listings: Listing[], constraints: QueryConstraints): string {
+  const names = formatListingNames(listings);
+
+  if (constraints.city && constraints.categories.length === 1) {
+    return `From the provided dataset, ${constraints.city} ${constraints.categories[0]} options include ${names}.`;
+  }
+
+  if (constraints.city) {
+    return `From the provided dataset, options in ${constraints.city} include ${names}.`;
+  }
+
+  if (constraints.categories.length === 1) {
+    return `From the provided dataset, ${constraints.categories[0]} options include ${names}.`;
+  }
+
+  return `From the provided dataset, options include ${names}.`;
+}
+
 function buildMissingInfoText(
   listing: Listing | undefined,
   query: string,
@@ -628,7 +759,7 @@ function buildMissingInfoText(
   if (!listing) {
     if (type === "availability") {
       return ensureDisclaimer(
-        "I can't check availability because the dataset does not include booking or availability data.",
+        "I can't check availability because the dataset does not include current hours, booking, or live availability data.",
       );
     }
 
@@ -638,12 +769,26 @@ function buildMissingInfoText(
       );
     }
 
-    return buildNameNotFoundText(extractNamedEntity(query) ?? "That place");
+    if (type === "missing_info") {
+      return ensureDisclaimer(
+        "I can only answer with details that are present in the dataset. Please name the listing you want me to check.",
+      );
+    }
+
+    return ensureDisclaimer(
+      "I can only share an approved listing link for a place that exists in the dataset. Please name the listing you want.",
+    );
   }
 
   if (type === "availability") {
+    const detailBits = listing.tags.filter((tag) => tag === "evening" || tag === "seasonal");
+    const extraDetail =
+      detailBits.length > 0
+        ? ` The dataset only says it is ${detailBits.join(" and ")}.`
+        : "";
+
     return ensureDisclaimer(
-      `I can't check availability because the dataset does not include booking or availability data. ${listing.name} is listed in the dataset${listing.externalUrl ? ", and its approved listing link is available below." : ", and no external listing link is available for it in the dataset."}`,
+      `I can't verify whether ${listing.name} is open tonight because current hours and availability are not in the dataset.${extraDetail}`,
     );
   }
 
@@ -654,21 +799,37 @@ function buildMissingInfoText(
   }
 
   if (type === "missing_info") {
-    if (knownMissingInfoPhrases.some((phrase) => normalizedQuery.includes(phrase))) {
-      const missingLabel = knownMissingInfoPhrases.find((phrase) => normalizedQuery.includes(phrase));
-      const displayLabel =
-        missingLabel === "opening hours" || missingLabel === "hours"
-          ? "Opening hours"
-          : missingLabel === "google maps"
-            ? "Google Maps"
-            : missingLabel
-              ? `${missingLabel.charAt(0).toUpperCase()}${missingLabel.slice(1)}`
-              : "That detail";
-
+    if (/\bhow much\b|\bcharge\b|\bper hour\b|\bhourly rate\b|\brate\b/.test(normalizedQuery)) {
       return ensureDisclaimer(
-        `${displayLabel} ${displayLabel === "Opening hours" ? "are" : "is"} not included in the dataset for ${listing.name}. ${listing.externalUrl ? "The listing itself is available below." : "No external listing link is available for it in the dataset."}`,
+        `The dataset does not include an hourly rate for ${listing.name}. It only lists the price tier as ${listing.priceTier}.`,
       );
     }
+
+    if (/\bhours\b|\bopening hours\b|\bopen now\b|\bopen tonight\b|\bopen today\b/.test(normalizedQuery)) {
+      return ensureDisclaimer(
+        `The dataset does not include current hours for ${listing.name}. ${listing.externalUrl ? "The approved listing link is available below if you want to verify details there." : "No external listing link is available for it in the dataset."}`,
+      );
+    }
+
+    if (/\bgoogle maps\b|\bdirections\b|\bdistance\b/.test(normalizedQuery)) {
+      return ensureDisclaimer(
+        `The dataset does not include Google Maps or directions for ${listing.name}. ${listing.externalUrl ? "The approved listing link is available below." : "No external listing link is available for it in the dataset."}`,
+      );
+    }
+
+    const missingLabel = knownMissingInfoPhrases.find((phrase) => normalizedQuery.includes(phrase));
+    const displayLabel =
+      missingLabel === "opening hours" || missingLabel === "hours"
+        ? "Opening hours"
+        : missingLabel === "google maps"
+          ? "Google Maps"
+          : missingLabel
+            ? `${missingLabel.charAt(0).toUpperCase()}${missingLabel.slice(1)}`
+            : "That detail";
+
+    return ensureDisclaimer(
+      `${displayLabel} ${displayLabel === "Opening hours" ? "are" : "is"} not included in the dataset for ${listing.name}. ${listing.externalUrl ? "The approved listing link is available below." : "No external listing link is available for it in the dataset."}`,
+    );
   }
 
   return ensureDisclaimer(
@@ -678,7 +839,10 @@ function buildMissingInfoText(
   );
 }
 
-function classifyConstraintIntent(query: string): "availability" | "transaction" | "missing_info" | "link" | "recommendation" | "out_of_scope" | "prompt_injection" | "small_talk" | "scoped" {
+function classifyConstraintIntent(
+  query: string,
+  context?: ResolverContext,
+): "availability" | "transaction" | "missing_info" | "link" | "recommendation" | "out_of_scope" | "prompt_injection" | "small_talk" | "scoped" {
   const normalizedQuery = normalize(query);
 
   if (injectionPhrases.some((phrase) => normalizedQuery.includes(phrase))) {
@@ -687,10 +851,6 @@ function classifyConstraintIntent(query: string): "availability" | "transaction"
 
   if (/^(hi|hello|helloo|hey|yo)\b/.test(normalizedQuery) || /\bhow are you\b/.test(normalizedQuery)) {
     return "small_talk";
-  }
-
-  if (creativeOutOfScopePhrases.some((phrase) => normalizedQuery.includes(phrase))) {
-    return "out_of_scope";
   }
 
   if (/\bwebsite\b|\burl\b|\blink\b/.test(normalizedQuery)) {
@@ -705,8 +865,20 @@ function classifyConstraintIntent(query: string): "availability" | "transaction"
     return "transaction";
   }
 
+  if (normalizedQuery.includes("better nearby") || normalizedQuery.includes("from google maps")) {
+    return "out_of_scope";
+  }
+
   if (knownMissingInfoPhrases.some((phrase) => normalizedQuery.includes(phrase))) {
     return "missing_info";
+  }
+
+  if (creativeOutOfScopePhrases.some((phrase) => normalizedQuery.includes(phrase))) {
+    return "out_of_scope";
+  }
+
+  if (context?.previousListings?.length && isFollowUpQuery(query)) {
+    return "recommendation";
   }
 
   const hasDatasetIntent =
@@ -723,16 +895,83 @@ function classifyConstraintIntent(query: string): "availability" | "transaction"
         "places",
         "options",
       ].includes(token),
-    ) || allListings.some((listing) => normalizedQuery.includes(normalize(listing.name)));
+    ) ||
+    hasDirectListingMention(query) ||
+    findAmbiguousListings(query).length > 1;
 
   return hasDatasetIntent ? "recommendation" : "scoped";
 }
 
+function hasRelaxableConstraints(constraints: QueryConstraints): boolean {
+  return (
+    constraints.requiredTags.length === 0 &&
+    constraints.unsupportedTerms.length === 0 &&
+    constraints.excludeNameTerms.length === 0 &&
+    constraints.exactListing === undefined &&
+    constraints.namedEntity === undefined &&
+    constraints.priceMin === undefined &&
+    constraints.priceMax === undefined
+  );
+}
+
+function canRecoverScopedResults(constraints: QueryConstraints): boolean {
+  return (
+    constraints.city !== undefined &&
+    constraints.categories.length > 0 &&
+    constraints.requiredTags.length === 0 &&
+    constraints.unsupportedTerms.length === 0 &&
+    constraints.excludeNameTerms.length === 0 &&
+    constraints.exactListing === undefined &&
+    constraints.priceMin === undefined &&
+    constraints.priceMax === undefined
+  );
+}
+
+function filterResultsByCoreScope(constraints: QueryConstraints): Listing[] {
+  return sortResults(
+    (constraints.candidateListings ?? allListings).filter((listing) => {
+      if (constraints.city && normalize(listing.city) !== normalize(constraints.city)) {
+        return false;
+      }
+
+      if (constraints.categories.length > 0 && !constraints.categories.includes(listing.category)) {
+        return false;
+      }
+
+      return true;
+    }),
+    constraints,
+  );
+}
+
+function recoverScopedResults(query: string, constraints: QueryConstraints): Listing[] {
+  if (constraints.categories.length > 0) {
+    const recovered = new Map<string, Listing>();
+
+    for (const category of constraints.categories) {
+      for (const listing of searchListings({
+        query,
+        city: constraints.city,
+        category,
+        limit: 3,
+      })) {
+        recovered.set(listing.id, listing);
+      }
+    }
+
+    return sortResults([...recovered.values()], constraints);
+  }
+
+  return searchListings({
+    query,
+    city: constraints.city,
+    limit: 3,
+  });
+}
+
 function buildPromptInjectionText(query: string, namedEntity?: string): string {
   const normalizedQuery = normalize(query);
-  const prefix = namedEntity
-    ? `${namedEntity} is not in the dataset, and `
-    : "";
+  const prefix = namedEntity ? `${namedEntity} is not in the dataset, and ` : "";
 
   if (normalizedQuery.includes("invent")) {
     return ensureDisclaimer(
@@ -743,6 +982,16 @@ function buildPromptInjectionText(query: string, namedEntity?: string): string {
   if (normalizedQuery.includes("raw url") || normalizedQuery.includes("destination url")) {
     return ensureDisclaimer(
       "I can't provide raw destination URLs. I can only share dataset-backed listing links when they are available.",
+    );
+  }
+
+  if (
+    normalizedQuery.includes("training data") ||
+    normalizedQuery.includes("outside knowledge") ||
+    normalizedQuery.includes("ignore the dataset")
+  ) {
+    return ensureDisclaimer(
+      `${prefix}I can't answer from training data or outside knowledge. I can only use the provided dataset.`,
     );
   }
 
@@ -783,31 +1032,48 @@ function buildScopedText(): string {
   );
 }
 
-function buildConstraints(query: string): QueryConstraints {
+function buildConstraints(query: string, context?: ResolverContext): QueryConstraints {
   const categories = inferCategories(query);
   const excludeNameTerms = inferExcludedNameTerms(query);
+  const requiredTags = inferRequiredTags(query);
+  const candidateListings =
+    context?.previousListings && isFollowUpQuery(query) ? context.previousListings : undefined;
   const namedEntity = extractNamedEntity(query);
+  const ambiguousListings =
+    candidateListings && candidateListings.length > 1
+      ? []
+      : findAmbiguousListings(query);
   const exactListing = shouldTryExactListing(query)
-    ? findBestListingByName(query, categories, excludeNameTerms)
-    : undefined;
-  const wantsAlternatives = /\balternative\b|\binstead\b/.test(normalize(query));
+    ? findBestListingByName(
+        query,
+        categories,
+        excludeNameTerms,
+        requiredTags,
+        candidateListings,
+      ) ??
+      (context?.previousListings?.length === 1 ? context.previousListings[0] : undefined)
+    : context?.previousListings?.length === 1 && isFollowUpQuery(query)
+      ? context.previousListings[0]
+      : undefined;
 
   return {
     city: findCity(query),
     categories,
-    requiredTags: inferRequiredTags(query),
+    requiredTags,
     unsupportedTerms: inferUnsupportedTerms(query),
     excludeNameTerms,
     exactListing,
     namedEntity: exactListing ? undefined : namedEntity,
-    wantsAlternatives,
+    wantsAlternatives: /\balternative\b|\binstead\b/.test(normalize(query)),
+    candidateListings,
+    ambiguousListings,
     ...inferPriceBounds(query),
   };
 }
 
-export function resolveUserQuery(query: string): QueryResolution {
-  const intent = classifyConstraintIntent(query);
-  const constraints = buildConstraints(query);
+export function resolveUserQuery(query: string, context?: ResolverContext): QueryResolution {
+  const intent = classifyConstraintIntent(query, context);
+  const constraints = buildConstraints(query, context);
 
   if (intent === "small_talk") {
     return {
@@ -840,15 +1106,34 @@ export function resolveUserQuery(query: string): QueryResolution {
   }
 
   if (intent === "prompt_injection") {
+    const fallbackResults = filterResults({
+      ...constraints,
+      namedEntity: undefined,
+      exactListing: undefined,
+      ambiguousListings: undefined,
+    }).slice(0, 3);
+    const baseText = buildPromptInjectionText(query, constraints.namedEntity).replace(
+      `\n\n${DISCLAIMER_TEXT}`,
+      "",
+    );
+    const needsRedirect =
+      normalize(query).includes("training data") ||
+      normalize(query).includes("outside knowledge") ||
+      normalize(query).includes("ignore the dataset");
+    const assistantText =
+      needsRedirect && fallbackResults.length > 0
+        ? ensureDisclaimer(`${baseText} ${buildDatasetRedirectText(fallbackResults, constraints)}`)
+        : ensureDisclaimer(baseText);
+
     return {
-      assistantText: buildPromptInjectionText(query, constraints.namedEntity),
-      listings: [],
+      assistantText,
+      listings: needsRedirect && fallbackResults.length > 0 ? fallbackResults : [],
       status: {
         phase: "refused",
         label: "Request refused safely",
         detail: "The request attempted to override guardrails or invent content.",
       },
-      note: "No listings were returned because the request attempted prompt injection or invention.",
+      note: "Listings are only included when they come from the dataset after a refusal-safe redirect.",
       logged: true,
       sanitized: true,
     };
@@ -870,7 +1155,9 @@ export function resolveUserQuery(query: string): QueryResolution {
   }
 
   if (intent === "availability" || intent === "transaction" || intent === "missing_info" || intent === "link") {
-    const listing = constraints.exactListing;
+    const listing =
+      constraints.exactListing ??
+      (context?.previousListings?.length === 1 ? context.previousListings[0] : undefined);
     const type =
       intent === "availability"
         ? "availability"
@@ -898,9 +1185,40 @@ export function resolveUserQuery(query: string): QueryResolution {
     };
   }
 
-  const filteredResults = filterResults(constraints);
+  if (constraints.ambiguousListings && constraints.ambiguousListings.length > 1) {
+    return {
+      assistantText: buildAmbiguousText(constraints.ambiguousListings),
+      listings: constraints.ambiguousListings,
+      status: {
+        phase: "ready",
+        label: "Clarification needed",
+        detail: "Multiple dataset listings matched the same name.",
+      },
+      note: "Multiple listings matched the same name, so clarification was requested.",
+      logged: false,
+      sanitized: false,
+    };
+  }
 
-  if (constraints.exactListing && filteredResults.length === 0) {
+  const filteredResults = filterResults(constraints);
+  const fallbackResults =
+    filteredResults.length === 0 && hasRelaxableConstraints(constraints)
+      ? filterResultsByCoreScope(constraints)
+      : [];
+  const recoveredResults =
+    filteredResults.length === 0 &&
+    fallbackResults.length === 0 &&
+    (hasRelaxableConstraints(constraints) || canRecoverScopedResults(constraints))
+      ? recoverScopedResults(query, constraints)
+      : [];
+  const effectiveResults =
+    filteredResults.length > 0
+      ? filteredResults
+      : fallbackResults.length > 0
+        ? fallbackResults
+        : recoveredResults;
+
+  if (constraints.exactListing && effectiveResults.length === 0) {
     const listing = getListingById(constraints.exactListing.id);
     return {
       assistantText: ensureDisclaimer(
@@ -922,7 +1240,7 @@ export function resolveUserQuery(query: string): QueryResolution {
     };
   }
 
-  if (filteredResults.length === 0) {
+  if (effectiveResults.length === 0) {
     return {
       assistantText: buildNoMatchText(query, constraints),
       listings: [],
@@ -937,13 +1255,11 @@ export function resolveUserQuery(query: string): QueryResolution {
     };
   }
 
-  const limitedResults = filteredResults.slice(0, 3);
-  const responseListings =
-    constraints.wantsAlternatives || !constraints.namedEntity ? limitedResults : [];
+  const responseListings = effectiveResults.slice(0, 3);
 
   return {
-    assistantText: buildRecommendationText(limitedResults, query),
-    listings: responseListings.length > 0 ? responseListings : limitedResults,
+    assistantText: buildRecommendationText(responseListings, query),
+    listings: responseListings,
     status: {
       phase: "ready",
       label: "Validated results ready",

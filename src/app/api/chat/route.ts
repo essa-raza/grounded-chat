@@ -5,11 +5,21 @@ import {
 } from "ai";
 
 import { DISCLAIMER_TEXT, SCOPE_NOTE } from "@/lib/constants";
-import { resolveUserQuery } from "@/lib/query-resolver";
+import { resolveUserQuery, type ResolverContext } from "@/lib/query-resolver";
 import type { ChatMessage } from "@/lib/types";
 
 export const maxDuration = 30;
 export const dynamic = "force-dynamic";
+
+function getMessageText(message: UIMessage): string {
+  return (
+    message.parts
+      .filter((part): part is Extract<(typeof message.parts)[number], { type: "text" }> => part.type === "text")
+      .map((part) => part.text)
+      .join(" ")
+      .trim() ?? ""
+  );
+}
 
 function writeStaticAssistantText(
   writer: Parameters<Parameters<typeof createUIMessageStream<ChatMessage>>[0]["execute"]>[0]["writer"],
@@ -34,22 +44,26 @@ function writeStaticAssistantText(
 
 export async function POST(request: Request) {
   const { messages } = (await request.json()) as { messages: UIMessage[] };
-  const latestUserMessage = [...messages]
-    .reverse()
-    .find((message) => message.role === "user");
-  const latestUserText =
-    latestUserMessage?.parts
-      .filter(
-        (
-          part,
-        ): part is Extract<(typeof latestUserMessage.parts)[number], { type: "text" }> =>
-          part.type === "text",
-      )
-      .map((part) => part.text)
-      .join(" ")
-      .trim() ?? "";
+  const userMessages = messages.filter((message) => message.role === "user");
+  const latestUserText = getMessageText(userMessages[userMessages.length - 1] as UIMessage);
+  let context: ResolverContext = {};
 
-  const resolution = resolveUserQuery(latestUserText);
+  for (const message of userMessages.slice(0, -1)) {
+    const userText = getMessageText(message);
+
+    if (!userText) {
+      continue;
+    }
+
+    const priorResolution = resolveUserQuery(userText, context);
+    context = {
+      previousListings:
+        priorResolution.listings.length > 0 ? priorResolution.listings : context.previousListings,
+      previousQuery: userText,
+    };
+  }
+
+  const resolution = resolveUserQuery(latestUserText, context);
 
   return createUIMessageStreamResponse({
     stream: createUIMessageStream<ChatMessage>({

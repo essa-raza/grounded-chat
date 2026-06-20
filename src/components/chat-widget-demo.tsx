@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { DefaultChatTransport } from "ai";
 import { useChat } from "@ai-sdk/react";
@@ -18,6 +18,7 @@ import type { ChatMessage } from "@/lib/types";
 export function ChatWidgetDemo() {
   const [open, setOpen] = useState(true);
   const [input, setInput] = useState("");
+  const messagesRef = useRef<HTMLDivElement | null>(null);
   const { messages, sendMessage, status } = useChat<ChatMessage>({
     transport: new DefaultChatTransport({
       api: "/api/chat",
@@ -27,6 +28,21 @@ export function ChatWidgetDemo() {
   const listings = useMemo(() => getLatestListings(messages), [messages]);
   const notice = useMemo(() => getLatestNotice(messages), [messages]);
   const streamStatus = useMemo(() => getLatestStatus(messages), [messages]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      messagesRef.current?.scrollTo({
+        top: messagesRef.current.scrollHeight,
+        behavior: "smooth",
+      });
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages, open, status]);
 
   return (
     <main className={styles.page}>
@@ -79,7 +95,7 @@ export function ChatWidgetDemo() {
             </div>
           </header>
 
-          <div className={styles.messages}>
+          <div ref={messagesRef} className={styles.messages}>
             {messages.length === 0 ? (
               <article className={`${styles.message} ${styles.assistant}`}>
                 <span className={styles.role}>Grounded</span>
